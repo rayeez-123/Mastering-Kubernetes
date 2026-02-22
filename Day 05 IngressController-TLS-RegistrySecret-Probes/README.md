@@ -51,7 +51,6 @@ Copy the output of these files into `tls.crt` and `tls.key` respectively for use
 Create a Kubernetes TLS secret named `traefik-tls-default` using your certificate files:
 
 ```bash
-# Using .crt extension
 kubectl create secret tls traefik-tls-default --key="tls.key" --cert="tls.crt"
 
 ```
@@ -137,3 +136,4 @@ kubectl create secret docker-registry docker-pwd \
 | 3 | Install Helm package manager |
 | 4 | Deploy Traefik ingress controller with HTTP→HTTPS redirect |
 | 5 | Store Docker Hub credentials as a Kubernetes secret |
+
