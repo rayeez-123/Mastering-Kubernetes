@@ -1,107 +1,139 @@
-![title-deploying-secure-kubernetes-ingress-with-ssl--yKaGY7MRR6OuKgx91mzOg-t2i_oA8oTZ2jrB9hh6dHFA](https://github.com/user-attachments/assets/145269ff-f908-41ff-ae3f-9d05facc67df)
+# TLS Certificates, Kubernetes Secrets & Traefik Ingress Setup
 
-
-
-# Kubernetes Ingress Controllers Setup
-
-This guide will help you set up Ingress Controllers, generate SSL keys, deploy Ingress Controllers, and manage Docker images in a Kubernetes cluster. We'll also create secrets and configure Route 53 records.
-
-## Ingress Controllers
-
-### Steps to Follow:
-
-1. **Generate SSL Keys**
-    - Navigate to the `/tmp` directory:
-      ```sh
-      cd /tmp
-      ```
-    - Create the key files `tls.key` and `tls.crt`:
-      ```sh
-      echo "<Your-Private-Key>" > tls.key
-      echo "<Your-Certificate>" > tls.crt
-      ```
-
-2. **Deploy Ingress Controllers**
-    - Create a secret for the SSL keys:
-      ```sh
-      kubectl create secret tls nginx-tls-default --key="tls.key" --cert="tls.crt"
-      ```
-    - Verify the secret:
-      ```sh
-      kubectl describe secret nginx-tls-default
-      ```
-    - List all secrets:
-      ```sh
-      kubectl get secrets
-      ```
-
-3. **Download Voting Images from Docker and Create a Private Container Registry on AWS**
-    - Attach an IAM role to your instance with necessary permissions.
-    - Tag and push the images to your private registry. After pushing, remove all local images:
-      ```sh
-      docker rmi $(docker images -aq) --force
-      ```
-
-4. **Deploy the Deployment**
-    - Provide all the image details in the YAML manifest and deploy the deployment.
-    - Expect an error due to missing secrets.
-
-5. **Create Secrets**
-    - Delete the deployment:
-      ```sh
-      kubectl delete deployment <your-deployment-name>
-      ```
-    - Create the necessary secrets:
-      ```sh
-      kubectl create secret docker-registry docker-pwd --docker-username=<your-username> --docker-password=<your-password> --docker-email=<your-email>
-      ```
-
-6. **Update YAML Manifest**
-    - Add `imagePullSecrets` under the images section in your YAML manifest:
-      ```yaml
-      imagePullSecrets:
-        - name: docker-pwd
-      ```
-
-7. **Configure Route 53**
-    - Go to Route 53 and create the following records:
-      - `www`
-      - `vote`
-      - `result`
-
-8. **Deploy Ingress**
-    - Deploy Ingress for the `result` and `vote` separately.
-
-## Commands Used:
-
-```sh
-# Navigate to /tmp directory
-cd /tmp
-
-# Create SSL key files
-echo "<Your-Private-Key>" > tls.key
-echo "<Your-Certificate>" > tls.crt
-
-# Create secret for SSL keys
-kubectl create secret tls nginx-tls-default --key="tls.key" --cert="tls.crt"
-
-# Verify the secret
-kubectl describe secret nginx-tls-default
-
-# List all secrets
-kubectl get secrets
-
-# Tag and push Docker images, then remove local images
-docker rmi $(docker images -aq) --force
-
-# Delete the existing deployment
-kubectl delete deployment <your-deployment-name>
-
-# Create Docker registry secret
-kubectl create secret docker-registry docker-pwd --docker-username=<your-username> --docker-password=<your-password> --docker-email=<your-email>
-```
-
+This guide covers generating TLS certificates with Let's Encrypt, configuring Kubernetes secrets, installing Helm, and deploying the Traefik ingress controller.
 
 ---
 
-This guide provides a simple walkthrough of setting up Ingress Controllers, generating SSL keys, deploying Ingress Controllers, creating secrets, and configuring Route 53 records. Follow the steps and use the commands provided to successfully set up your Kubernetes environment.
+## Prerequisites
+
+- A domain name you control (with DNS management access)
+- A running Kubernetes cluster with `kubectl` configured
+- Ubuntu/Debian-based system
+- A Docker Hub account with an access token
+
+---
+
+## 1. Generate TLS Certificates with Let's Encrypt (Certbot)
+
+Update your package list and install Certbot via Snap:
+
+```bash
+sudo apt update
+sudo snap install --classic certbot
+```
+
+Generate a wildcard TLS certificate using DNS challenge verification. Replace `<Your-Email-ID>` and `<Your-Domain>` with your actual values:
+
+```bash
+certbot certonly --manual --preferred-challenges=dns \
+  --key-type rsa \
+  --email <Your-Email-ID> \
+  --server https://acme-v02.api.letsencrypt.org/directory \
+  --agree-tos \
+  -d *.<Your-Domain>
+```
+
+> **Note:** During this process, Certbot will ask you to add a DNS TXT record to verify domain ownership. Log in to your DNS provider and add the record before proceeding.
+
+Once complete, retrieve your certificate and private key:
+
+```bash
+cat /etc/letsencrypt/live/<Your-Domain>/fullchain.pem
+cat /etc/letsencrypt/live/<Your-Domain>/privkey.pem
+```
+
+Copy the output of these files into `tls.crt` and `tls.key` respectively for use in the next step.
+
+---
+
+## 2. Create TLS Secrets in Kubernetes
+
+Create a Kubernetes TLS secret named `traefik-tls-default` using your certificate files:
+
+```bash
+# Using .crt extension
+kubectl create secret tls traefik-tls-default --key="tls.key" --cert="tls.crt"
+
+```
+
+Verify the secret was created correctly:
+
+```bash
+kubectl describe secrets traefik-tls-default
+```
+
+---
+
+## 3. Install Helm
+
+Install the required dependencies and add the Helm repository:
+
+```bash
+sudo apt-get install curl gpg apt-transport-https --yes
+
+curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey \
+  | gpg --dearmor \
+  | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+
+echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" \
+  | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+
+sudo apt-get update
+sudo apt-get install helm
+```
+
+Confirm Helm is installed successfully:
+
+```bash
+helm version
+```
+
+---
+
+## 4. Install Traefik Ingress Controller via Helm
+
+Add the official Traefik Helm chart repository and install Traefik with HTTPS redirect enabled:
+
+```bash
+helm repo add traefik https://traefik.github.io/charts
+helm repo update
+
+helm install traefik traefik/traefik \
+  --set service.type=LoadBalancer \
+  --set ports.web.port=80 \
+  --set ports.websecure.port=443 \
+  --set additionalArguments="{--entrypoints.web.http.redirections.entrypoint.to=websecure,--entrypoints.web.http.redirections.entrypoint.scheme=https}"
+```
+
+This configuration:
+- Exposes Traefik as a `LoadBalancer` service
+- Listens on port `80` (HTTP) and port `443` (HTTPS)
+- Automatically redirects all HTTP traffic to HTTPS
+
+---
+
+## 5. Configure Docker Hub Credentials as a Kubernetes Secret
+
+Create a Kubernetes secret to allow your cluster to pull images from Docker Hub. Replace the placeholder values with your actual credentials:
+
+```bash
+kubectl create secret docker-registry docker-pwd \
+  --docker-server=docker.io \
+  --docker-username=<username> \
+  --docker-password=<Your_Dockerhub_Token> \
+  --docker-email=<Your_Email_ID>
+```
+
+> **Tip:** Use a Docker Hub **access token** rather than your account password for better security. Tokens can be generated from your Docker Hub account settings under **Security**.
+
+---
+
+## Summary
+
+| Step | Description |
+|------|-------------|
+| 1 | Generate wildcard TLS cert via Let's Encrypt DNS challenge |
+| 2 | Store TLS cert as a Kubernetes secret |
+| 3 | Install Helm package manager |
+| 4 | Deploy Traefik ingress controller with HTTP→HTTPS redirect |
+| 5 | Store Docker Hub credentials as a Kubernetes secret |
